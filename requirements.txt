@@ -1,9 +1,11 @@
-streamlit>=1.27.0
-numpy
+streamlit
+numpy<2
 Pillow
+huggingface_hub
 torch
 torchvision
-tensorflow
+tensorflow==2.15.0
 ultralytics
-huggingface-hub
+opencv-python-headless
+av
 streamlit-webrtc
