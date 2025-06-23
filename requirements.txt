@@ -6,7 +6,7 @@ torch==2.0.1
 torchvision==0.15.2
 tensorflow==2.15.0
 keras==2.15.0
-ultralytics==8.1.1
-opencv-python-headless
+ultralytics==8.0.20
+opencv-python-headless==4.7.0.72
 av
 streamlit-webrtc
