@@ -221,10 +221,4 @@ if model is not None:
 else:
     st.warning("Please select a model first.")
 
-# Notes
-st.markdown("---")
-st.write("**Notes:**")
-st.write(f"- Models from HF: {HF_REPO_ID}")
-st.write("- Classification assumes binary output.")
-st.write("- YOLO models output bounding boxes with class names.")
-st.write("- Live camera uses PIL for drawing, no cv2 needed.")
+
