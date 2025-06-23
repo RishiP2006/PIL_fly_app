@@ -4,6 +4,7 @@ Pillow
 huggingface_hub
 torch
 torchvision
+keras==2.15.0
 tensorflow==2.15.0
 ultralytics
 opencv-python-headless
