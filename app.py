@@ -9,6 +9,23 @@ import av
 # Framework imports
 try:
     import tensorflow as tf
+
+    # MONKEY PATCH to fix keras.src.* errors and batch_shape issues
+    import sys
+    sys.modules['keras'] = tf.keras
+    sys.modules['keras.layers'] = tf.keras.layers
+    sys.modules['keras.models'] = tf.keras.models
+    sys.modules['keras.src.models.functional'] = tf.keras.models
+    sys.modules['keras.src.layers'] = tf.keras.layers
+
+    from tensorflow.keras.layers import InputLayer
+    _orig_init = InputLayer.__init__
+    def _patched_init(self, *args, batch_shape=None, **kwargs):
+        if batch_shape is not None:
+            kwargs['batch_input_shape'] = tuple(batch_shape)
+        return _orig_init(self, *args, **kwargs)
+    InputLayer.__init__ = _patched_init
+
     keras_load_model = tf.keras.models.load_model
     _HAS_KERAS = True
 except:
@@ -29,7 +46,7 @@ except:
     _HAS_TORCH = False
 
 st.set_page_config(page_title="Drosophila Gender Detection", layout="centered")
-st.title("🪰 Drosophila Gender Detection")
+st.title("🦠 Drosophila Gender Detection")
 st.write("Select a model and upload an image or use live camera.")
 
 HF_REPO_ID = "RishiPTrial/drosophila-models"
@@ -72,7 +89,6 @@ for name, info in MODELS_INFO.items():
         st.warning(f"Model {name} requires PyTorch but unavailable.")
 
 # Model loading helpers
-
 def load_model_final_pth(path):
     model = models.resnet18(pretrained=False)
     model.fc = nn.Linear(model.fc.in_features, 1)
@@ -108,7 +124,6 @@ def load_model_from_hf(name, info):
     return None
 
 # Inference helpers
-
 def preprocess_image_pil(pil_img, size):
     return np.asarray(pil_img.resize((size, size))).astype(np.float32) / 255.0
 
@@ -126,7 +141,6 @@ def classify(model, img_array):
 def interpret_classification(preds):
     if preds is None: return None, None
     arr = np.asarray(preds)
-    # handle binary output shape
     if arr.ndim == 2 and arr.shape[1] == 2:
         exps = np.exp(arr - np.max(arr, axis=1, keepdims=True))
         probs = exps / np.sum(exps, axis=1, keepdims=True)
@@ -153,7 +167,6 @@ def detect_yolo(model, pil_img):
             detections.append((name, conf, box))
     return detections
 
-# Video processor with model in constructor
 class GenderDetectionProcessor(VideoProcessorBase):
     def __init__(self, model, info):
         self.model = model
@@ -176,14 +189,12 @@ class GenderDetectionProcessor(VideoProcessorBase):
                     draw.text((x1, max(y1-10,0)), f"{name} {conf:.2f}", fill="green")
         return av.VideoFrame.from_ndarray(np.array(pil), format="rgb24")
 
-# UI: select model
 safe_map = {re.sub(r"[^\w\s.-]","_",name): name for name in MODELS_INFO}
 safe_names = list(safe_map.keys())
 choice = st.selectbox("Select model", safe_names) if safe_names else None
 model_name = safe_map.get(choice)
 model = load_model_from_hf(model_name, MODELS_INFO[model_name]) if model_name else None
 
-# Image upload section
 st.markdown("---")
 st.subheader("📷 Upload Image")
 img_file = st.file_uploader("Upload image", type=["jpg","jpeg","png"])
@@ -207,7 +218,6 @@ if img_file and model is not None:
             draw.text((x1, max(y1-10,0)), f"{name} {conf:.2f}", fill="green")
         st.image(disp, use_column_width=True)
 
-# Live camera section
 st.markdown("---")
 st.subheader("📸 Live Camera Gender Detection")
 if model is not None:
@@ -220,5 +230,3 @@ if model is not None:
     )
 else:
     st.warning("Please select a model first.")
-
-
