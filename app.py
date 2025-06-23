@@ -1,32 +1,6 @@
 # app.py
 
 import sys
-
-# ---------------- Monkey-patch for Keras deserialization issues ----------------
-# This makes imports like 'keras.src.models.functional' resolve to 'tf.keras.models'.
-try:
-    import tensorflow as _tf  # noqa: F841
-    # Alias keras modules to tf.keras
-    sys.modules['keras'] = _tf.keras
-    sys.modules['keras.layers'] = _tf.keras.layers
-    sys.modules['keras.models'] = _tf.keras.models
-    sys.modules['keras.src.models.functional'] = _tf.keras.models
-    sys.modules['keras.src.layers'] = _tf.keras.layers
-
-    # Patch InputLayer.__init__ to accept `batch_shape` from configs
-    from tensorflow.keras.layers import InputLayer as _InputLayer
-    _orig_inputlayer_init = _InputLayer.__init__
-    def _patched_inputlayer_init(self, *args, batch_shape=None, **kwargs):
-        # If config passes `batch_shape`, convert to batch_input_shape
-        if batch_shape is not None:
-            kwargs['batch_input_shape'] = tuple(batch_shape)
-        return _orig_inputlayer_init(self, *args, **kwargs)
-    _InputLayer.__init__ = _patched_inputlayer_init
-except Exception:
-    # If TensorFlow not installed or patch fails, we proceed; loading Keras models may later error.
-    pass
-# --------------------------------------------------------------------------------
-
 import streamlit as st
 import numpy as np
 from PIL import Image, ImageDraw
@@ -35,35 +9,13 @@ from huggingface_hub import hf_hub_download, HfApi
 from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import av
 
-# Framework imports
-try:
-    import tensorflow as tf
-    keras_load_model = tf.keras.models.load_model
-    _HAS_KERAS = True
-except Exception:
-    _HAS_KERAS = False
-
-try:
-    from ultralytics import YOLO
-    _HAS_YOLO = True
-except Exception:
-    _HAS_YOLO = False
-
-try:
-    import torch
-    import torch.nn as nn
-    from torchvision import models as _torch_models
-    _HAS_TORCH = True
-except Exception:
-    _HAS_TORCH = False
-
 st.set_page_config(page_title="Drosophila Gender Detection", layout="centered")
 st.title("🪰 Drosophila Gender Detection")
 st.write("Select a model and upload an image or use live camera.")
 
 HF_REPO_ID = "RishiPTrial/drosophila-models"
 
-# ------------------------ HF model listing ------------------------
+# ---------------- HF model listing ----------------
 @st.cache_data(show_spinner=False)
 def list_hf_models():
     api = HfApi()
@@ -72,7 +24,6 @@ def list_hf_models():
     except Exception as e:
         st.error(f"Error listing files in Hugging Face repo: {e}")
         return []
-    # Filter by supported extensions, skip hidden
     return [
         f for f in files
         if f.lower().endswith((".pt", ".keras", ".h5", ".pth")) and not f.startswith(".")
@@ -83,56 +34,61 @@ def build_models_info():
     files = list_hf_models()
     info = {}
     for fname in files:
-        # default input size for classification
         input_size = 224
         if "inceptionv3" in fname.lower():
             input_size = 299
-        # Determine type/framework
         lower = fname.lower()
         if lower.endswith(".pt"):
-            # YOLO detection
             info[fname] = {"type": "detection", "framework": "yolo"}
         elif lower.endswith((".keras", ".h5")):
-            info[fname] = {
-                "type": "classification",
-                "framework": "keras",
-                "input_size": input_size
-            }
+            info[fname] = {"type": "classification", "framework": "keras", "input_size": input_size}
         elif fname == "model_final.pth":
-            info[fname] = {
-                "type": "classification",
-                "framework": "torch_custom",
-                "input_size": input_size
-            }
+            info[fname] = {"type": "classification", "framework": "torch_custom", "input_size": input_size}
         elif lower.endswith(".pth"):
-            info[fname] = {
-                "type": "classification",
-                "framework": "torch",
-                "input_size": input_size
-            }
+            info[fname] = {"type": "classification", "framework": "torch", "input_size": input_size}
     return info
 
 MODELS_INFO = build_models_info()
 if not MODELS_INFO:
     st.error(f"No model files found in HF repo {HF_REPO_ID}")
 
-# Warn if missing frameworks
-for name, info in MODELS_INFO.items():
-    fw = info.get("framework")
-    if fw == "keras" and not _HAS_KERAS:
-        st.warning(f"Model '{name}' requires TensorFlow/Keras but unavailable.")
-    if fw == "yolo" and not _HAS_YOLO:
-        st.warning(f"Model '{name}' requires Ultralytics YOLO but unavailable.")
-    if fw in ("torch", "torch_custom") and not _HAS_TORCH:
-        st.warning(f"Model '{name}' requires PyTorch but unavailable.")
+# We will check availability inside functions when loading models
 
-# ------------------------ Model loading ------------------------
+# ---------------- Lazy monkey-patch helper ----------------
+def apply_keras_monkey_patch():
+    """
+    Apply monkey-patch so that older .keras configs referring to keras.src.models.functional etc.
+    can resolve under tf.keras. Done lazily when we first load a Keras model.
+    """
+    try:
+        import tensorflow as _tf
+        # Alias keras modules to tf.keras
+        sys.modules['keras'] = _tf.keras
+        sys.modules['keras.layers'] = _tf.keras.layers
+        sys.modules['keras.models'] = _tf.keras.models
+        sys.modules['keras.src.models.functional'] = _tf.keras.models
+        sys.modules['keras.src.layers'] = _tf.keras.layers
+
+        from tensorflow.keras.layers import InputLayer as _InputLayer
+        _orig_inputlayer_init = _InputLayer.__init__
+        def _patched_inputlayer_init(self, *args, batch_shape=None, **kwargs):
+            if batch_shape is not None:
+                kwargs['batch_input_shape'] = tuple(batch_shape)
+            return _orig_inputlayer_init(self, *args, **kwargs)
+        _InputLayer.__init__ = _patched_inputlayer_init
+    except Exception:
+        pass
+
+# ---------------- Model loading ----------------
 def load_model_final_pth(path):
-    # Custom ResNet18 binary classifier
+    # Lazy import torch
+    import torch
+    import torch.nn as nn
+    from torchvision import models as _torch_models
+
     model = _torch_models.resnet18(pretrained=False)
     model.fc = nn.Linear(model.fc.in_features, 1)
     checkpoint = torch.load(path, map_location="cpu")
-    # checkpoint may have {"model": state_dict, ...}
     state_dict = checkpoint.get("model", checkpoint) if isinstance(checkpoint, dict) else checkpoint
     model.load_state_dict(state_dict, strict=False)
     model.eval()
@@ -148,17 +104,45 @@ def load_model_from_hf(name, info):
 
     fw = info.get("framework")
     try:
-        if fw == "keras" and _HAS_KERAS:
-            # Keras model; rely on monkey-patch above for deserialization
-            return keras_load_model(local_path)
-        if fw == "torch_custom" and _HAS_TORCH:
+        if fw == "keras":
+            # Lazy import TensorFlow
+            try:
+                import tensorflow as tf
+            except ImportError:
+                st.error("Cannot load Keras model; TensorFlow not installed.")
+                return None
+            # Apply monkey-patch once
+            apply_keras_monkey_patch()
+            # Load
+            model = tf.keras.models.load_model(local_path)
+            return model
+
+        if fw == "torch_custom":
+            try:
+                import torch
+            except ImportError:
+                st.error("Cannot load custom PyTorch model; torch not installed.")
+                return None
             return load_model_final_pth(local_path)
-        if fw == "torch" and _HAS_TORCH:
+
+        if fw == "torch":
+            try:
+                import torch
+            except ImportError:
+                st.error("Cannot load PyTorch model; torch not installed.")
+                return None
             m = torch.load(local_path, map_location="cpu")
             m.eval()
             return m
-        if fw == "yolo" and _HAS_YOLO:
+
+        if fw == "yolo":
+            try:
+                from ultralytics import YOLO
+            except ImportError:
+                st.error("Cannot load YOLO model; ultralytics not installed.")
+                return None
             return YOLO(local_path)
+
     except Exception as e:
         st.error(f"Failed loading model {name}: {e}")
         return None
@@ -166,57 +150,57 @@ def load_model_from_hf(name, info):
     st.error(f"Unsupported framework for {name}")
     return None
 
-# ------------------------ Inference helpers ------------------------
+# ---------------- Inference helpers ----------------
 def preprocess_image_pil(pil_img: Image.Image, size: int):
-    # Resize + normalize [0,1], return numpy RGB array
     arr = pil_img.resize((size, size))
     arr = np.asarray(arr).astype(np.float32) / 255.0
     return arr
 
 def classify(model, img_array: np.ndarray):
-    # img_array: (H,W,3) normalized float32 in [0,1]
     x = np.expand_dims(img_array, axis=0)  # (1,H,W,3)
+    # Keras?
     try:
-        if _HAS_KERAS and isinstance(model, tf.keras.Model):
-            preds = model.predict(x)
-            return preds
-        if _HAS_TORCH and isinstance(model, torch.nn.Module):
+        import tensorflow as tf
+        if isinstance(model, tf.keras.Model):
+            return model.predict(x)
+    except Exception:
+        pass
+    # Torch?
+    try:
+        import torch
+        if isinstance(model, torch.nn.Module):
             with torch.no_grad():
-                # convert to (1,3,H,W)
                 x_t = torch.tensor(x).permute(0,3,1,2).float()
                 out = model(x_t)
-                # out shape could be (1,1) or (1,2)
                 return out.cpu().numpy()
-    except Exception as e:
-        st.error(f"Prediction failed: {e}")
+    except Exception:
+        pass
+    st.error("Unknown model type for prediction.")
     return None
 
 def interpret_classification(preds):
     if preds is None:
         return None, None
     arr = np.asarray(preds)
-    # binary softmax or logits shape (1,2)
     if arr.ndim == 2 and arr.shape[1] == 2:
         exps = np.exp(arr - np.max(arr, axis=1, keepdims=True))
         probs = exps / np.sum(exps, axis=1, keepdims=True)
         idx = int(np.argmax(probs, axis=1)[0])
         label = ["Male", "Female"][idx]
         return label, float(probs[0][idx])
-    # sigmoid binary shape (1,1)
     if arr.ndim == 2 and arr.shape[1] == 1:
         val = float(arr[0][0])
-        # if logits, apply sigmoid
         prob = 1/(1+np.exp(-val)) if (val < 0 or val > 1) else val
         label = "Female" if prob >= 0.5 else "Male"
-        confidence = prob if label == "Female" else 1 - prob
-        return label, confidence
+        conf = prob if label == "Female" else 1-prob
+        return label, conf
     st.warning(f"Unexpected prediction shape: {arr.shape}")
     return None, None
 
 def detect_yolo(model, pil_img: Image.Image):
-    # Convert PIL to numpy RGB
-    arr = np.array(pil_img.convert("RGB"))
     try:
+        import numpy as _np
+        arr = _np.array(pil_img.convert("RGB"))
         results = model.predict(source=arr)
     except Exception as e:
         st.error(f"YOLO inference failed: {e}")
@@ -226,20 +210,23 @@ def detect_yolo(model, pil_img: Image.Image):
         for b in res.boxes:
             cls = int(b.cls[0])
             conf = float(b.conf[0])
-            box = tuple(map(int, b.xyxy[0].cpu().numpy())) if hasattr(b.xyxy[0], 'cpu') else tuple(map(int, b.xyxy[0]))
+            # get box coords
+            try:
+                coords = tuple(map(int, b.xyxy[0].cpu().numpy()))
+            except Exception:
+                coords = tuple(map(int, b.xyxy[0]))
             name = model.names.get(cls, str(cls)) if hasattr(model, 'names') else str(cls)
-            detections.append((name, conf, box))
+            detections.append((name, conf, coords))
     return detections
 
-# ------------------------ VideoProcessor for live feed ------------------------
+# ---------------- VideoProcessor for live feed ----------------
 class GenderDetectionProcessor(VideoProcessorBase):
     def __init__(self, model, info):
         self.model = model
         self.info = info
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
-        # For live, use RGB PIL drawing
-        img = frame.to_ndarray(format="rgb24")  # (H,W,3) RGB
+        img = frame.to_ndarray(format="rgb24")
         pil = Image.fromarray(img)
         draw = ImageDraw.Draw(pil)
         if self.model is not None:
@@ -251,16 +238,13 @@ class GenderDetectionProcessor(VideoProcessorBase):
                 if label:
                     draw.text((10, 10), f"{label} ({prob:.1%})", fill="red")
             else:
-                # detection
                 dets = detect_yolo(self.model, pil)
                 for name, conf, (x1, y1, x2, y2) in dets:
                     draw.rectangle([x1, y1, x2, y2], outline="green", width=2)
                     draw.text((x1, max(y1-10, 0)), f"{name} {conf:.2f}", fill="green")
-        # return frame
         return av.VideoFrame.from_ndarray(np.array(pil), format="rgb24")
 
-# ------------------------ UI: Model dropdown ------------------------
-# Safe label mapping to avoid special chars
+# ---------------- UI: Model dropdown ----------------
 def safe_label(name):
     return re.sub(r"[^\w\s.-]", "_", name)
 
@@ -270,7 +254,7 @@ model_choice_display = st.selectbox("Select model", safe_names) if safe_names el
 model_name = safe_to_real.get(model_choice_display, None)
 model = load_model_from_hf(model_name, MODELS_INFO[model_name]) if model_name else None
 
-# ------------------------ UI: Image upload ------------------------
+# ---------------- UI: Image upload ----------------
 st.markdown("---")
 st.subheader("📷 Upload Image")
 img_file = st.file_uploader("Upload image", type=["jpg","jpeg","png"])
@@ -300,7 +284,7 @@ if img_file and model is not None:
         if dets:
             st.info(f"Detected Males: {male_count}, Females: {female_count}")
 
-# ------------------------ UI: Live camera ------------------------
+# ---------------- UI: Live camera ----------------
 st.markdown("---")
 st.subheader("📸 Live Camera Gender Detection")
 if model is not None:
@@ -313,5 +297,4 @@ if model is not None:
     )
 else:
     st.warning("Please select a model first.")
-
 
