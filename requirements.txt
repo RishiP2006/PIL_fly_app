@@ -2,11 +2,11 @@ streamlit
 numpy<2
 Pillow
 huggingface_hub
-torch
-torchvision
-keras==2.15.0
+torch==2.2.2
+torchvision==0.17.2
 tensorflow==2.15.0
-ultralytics
+keras==2.15.0
+ultralytics==8.1.1
 opencv-python-headless
 av
 streamlit-webrtc
