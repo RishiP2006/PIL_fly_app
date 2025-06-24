@@ -13,13 +13,25 @@ st.write("Select a model and upload an image or use live camera.")
 
 HF_REPO_ID = "RishiPTrial/drosophila-models"
 
+# Diagnostic: check ultralytics import and version
+def check_ultralytics():
+    try:
+        import ultralytics
+        version = ultralytics.__version__ if hasattr(ultralytics, "__version__") else "unknown"
+        st.info(f"Ultralytics installed, version: {version}")
+        return True
+    except Exception as e:
+        st.warning(f"Ultralytics import failed: {e}")
+        return False
+
+_ULTRA_AVAILABLE = check_ultralytics()
+
 # ---------------- Model listing from HF ----------------
 @st.cache_data(show_spinner=False)
 def list_hf_models():
     api = HfApi()
     try:
         files = api.list_repo_files(repo_id=HF_REPO_ID)
-        # only model files
         return [f for f in files if f.lower().endswith((".pt", ".keras", ".h5", ".pth")) and not f.startswith(".")]
     except Exception:
         return []
@@ -50,7 +62,6 @@ if not MODELS_INFO:
 # ---------------- Model loading helpers ----------------
 
 def load_model_final_pth(path):
-    # Lazy import torch and torchvision
     import torch
     import torch.nn as nn
     from torchvision import models as _torch_models
@@ -64,9 +75,6 @@ def load_model_final_pth(path):
 
 @st.cache_resource(show_spinner=False)
 def load_model_from_hf(name, info):
-    """
-    Lazy-load model from HF. Returns the loaded model or None (and shows st.error).
-    """
     try:
         path = hf_hub_download(repo_id=HF_REPO_ID, filename=name)
     except Exception as e:
@@ -76,14 +84,12 @@ def load_model_from_hf(name, info):
     fw = info.get("framework")
     try:
         if fw == "keras":
-            # Lazy import TensorFlow
+            # Lazy import TF
             try:
                 import tensorflow as tf
             except ImportError:
                 st.error("TensorFlow not available for Keras models.")
                 return None
-            # If older .keras format needs monkey-patch, insert here.
-            # For now, assume saved model is compatible.
             try:
                 model = tf.keras.models.load_model(path)
             except Exception as e:
@@ -119,12 +125,14 @@ def load_model_from_hf(name, info):
 
         if fw == "yolo":
             # Lazy import ultralytics
+            if not _ULTRA_AVAILABLE:
+                st.error("Ultralytics YOLO not installed; cannot load detection model.")
+                return None
             try:
                 from ultralytics import YOLO
-            except ImportError:
-                st.error("Ultralytics YOLO not installed; skipping detection models.")
+            except Exception as e:
+                st.error(f"Ultralytics import failed when loading model: {e}")
                 return None
-            # Attempt to load; catch libGL errors etc.
             try:
                 return YOLO(path)
             except Exception as e:
@@ -244,7 +252,7 @@ model = None
 if model_name:
     info = MODELS_INFO[model_name]
     model = load_model_from_hf(model_name, info)
-    # If loading failed, model is None and errors shown in load_model_from_hf
+    # If load_model_from_hf fails, it shows st.error inside
 
 # ---------------- UI: Image upload ----------------
 
