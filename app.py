@@ -8,12 +8,11 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import av
 
 st.set_page_config(page_title="Drosophila Gender Detection", layout="centered")
-st.title("🪰 Drosophila Gender Detection")
+st.title("🩰 Drosophila Gender Detection")
 st.write("Select a model and upload an image or use live camera.")
 
-HF_REPO_ID = "RishiPTrial/drosophila-models"
+HF_REPO_ID = "RishiPTrial/models_h5"
 
-# Diagnostic: check ultralytics import and version
 def check_ultralytics():
     try:
         import ultralytics
@@ -26,13 +25,12 @@ def check_ultralytics():
 
 _ULTRA_AVAILABLE = check_ultralytics()
 
-# ---------------- Model listing from HF ----------------
 @st.cache_data(show_spinner=False)
 def list_hf_models():
     api = HfApi()
     try:
         files = api.list_repo_files(repo_id=HF_REPO_ID)
-        return [f for f in files if f.lower().endswith((".pt", ".keras", ".h5", ".pth")) and not f.startswith(".")]
+        return [f for f in files if f.lower().endswith((".pt", ".h5", ".pth")) and not f.startswith(".")]
     except Exception:
         return []
 
@@ -47,7 +45,7 @@ def build_models_info():
         lower = fname.lower()
         if lower.endswith(".pt"):
             info[fname] = {"type": "detection", "framework": "yolo"}
-        elif lower.endswith((".keras", ".h5")):
+        elif lower.endswith(".h5"):
             info[fname] = {"type": "classification", "framework": "keras", "input_size": input_size}
         elif fname == "model_final.pth":
             info[fname] = {"type": "classification", "framework": "torch_custom", "input_size": input_size}
@@ -58,8 +56,6 @@ def build_models_info():
 MODELS_INFO = build_models_info()
 if not MODELS_INFO:
     st.error(f"No model files found in HF repo {HF_REPO_ID}")
-
-# ---------------- Model loading helpers ----------------
 
 def load_model_final_pth(path):
     import torch
@@ -84,14 +80,15 @@ def load_model_from_hf(name, info):
     fw = info.get("framework")
     try:
         if fw == "keras":
-            # Lazy import TF
             try:
                 import tensorflow as tf
+                from tensorflow.keras.applications.resnet50 import preprocess_input
+                custom_objects = {"preprocess_input": preprocess_input}
             except ImportError:
                 st.error("TensorFlow not available for Keras models.")
                 return None
             try:
-                model = tf.keras.models.load_model(path)
+                model = tf.keras.models.load_model(path, custom_objects=custom_objects)
             except Exception as e:
                 st.error(f"Failed loading Keras model {name}: {e}")
                 return None
@@ -100,10 +97,6 @@ def load_model_from_hf(name, info):
         if fw == "torch_custom":
             try:
                 import torch
-            except ImportError:
-                st.error("PyTorch not available for custom model.")
-                return None
-            try:
                 return load_model_final_pth(path)
             except Exception as e:
                 st.error(f"Failed loading custom PyTorch model {name}: {e}")
@@ -112,28 +105,19 @@ def load_model_from_hf(name, info):
         if fw == "torch":
             try:
                 import torch
-            except ImportError:
-                st.error("PyTorch not available.")
-                return None
-            try:
                 m = torch.load(path, map_location="cpu")
                 m.eval()
+                return m
             except Exception as e:
                 st.error(f"Failed loading PyTorch model {name}: {e}")
                 return None
-            return m
 
         if fw == "yolo":
-            # Lazy import ultralytics
             if not _ULTRA_AVAILABLE:
                 st.error("Ultralytics YOLO not installed; cannot load detection model.")
                 return None
             try:
                 from ultralytics import YOLO
-            except Exception as e:
-                st.error(f"Ultralytics import failed when loading model: {e}")
-                return None
-            try:
                 return YOLO(path)
             except Exception as e:
                 st.error(f"Failed loading YOLO model {name}: {e}")
@@ -146,7 +130,6 @@ def load_model_from_hf(name, info):
     st.error(f"Unsupported framework for {name}")
     return None
 
-# ---------------- Inference helpers ----------------
 
 def preprocess_image_pil(pil_img: Image.Image, size: int):
     arr = pil_img.resize((size, size))
@@ -155,14 +138,12 @@ def preprocess_image_pil(pil_img: Image.Image, size: int):
 
 def classify(model, img_array: np.ndarray):
     x = np.expand_dims(img_array, axis=0)
-    # Keras?
     try:
         import tensorflow as tf
         if isinstance(model, tf.keras.Model):
             return model.predict(x)
     except Exception:
         pass
-    # Torch?
     try:
         import torch
         if isinstance(model, torch.nn.Module):
@@ -214,12 +195,10 @@ def detect_yolo(model, pil_img: Image.Image):
             detections.append((name, conf, coords))
     return detections
 
-# ---------------- VideoProcessor ----------------
-
 class GenderDetectionProcessor(VideoProcessorBase):
-    def __init__(self, model, info):
+    def __init__(self):
         self.model = model
-        self.info = info
+        self.info = MODELS_INFO[model_name]
 
     def recv(self, frame: av.VideoFrame) -> av.VideoFrame:
         img = frame.to_ndarray(format="rgb24")
@@ -240,8 +219,6 @@ class GenderDetectionProcessor(VideoProcessorBase):
                     draw.text((x1, max(y1-10, 0)), f"{name} {conf:.2f}", fill="green")
         return av.VideoFrame.from_ndarray(np.array(pil), format="rgb24")
 
-# ---------------- UI: Model dropdown ----------------
-
 def safe_label(name):
     return re.sub(r"[^\w\s.-]", "_", name)
 
@@ -252,13 +229,10 @@ model = None
 if model_name:
     info = MODELS_INFO[model_name]
     model = load_model_from_hf(model_name, info)
-    # If load_model_from_hf fails, it shows st.error inside
-
-# ---------------- UI: Image upload ----------------
 
 st.markdown("---")
 st.subheader("📷 Upload Image")
-img_file = st.file_uploader("Upload image", type=["jpg","jpeg","png"])
+img_file = st.file_uploader("Upload image", type=["jpg", "jpeg", "png"])
 if img_file and model is not None:
     pil_img = Image.open(img_file).convert("RGB")
     st.image(pil_img, use_column_width=True)
@@ -286,8 +260,6 @@ if img_file and model is not None:
         if dets:
             st.info(f"Detected Males: {male_count}, Females: {female_count}")
 
-# ---------------- UI: Live camera ----------------
-
 st.markdown("---")
 st.subheader("📸 Live Camera Gender Detection")
 if model is not None:
@@ -295,13 +267,12 @@ if model is not None:
         key="live-gender-detect",
         mode=WebRtcMode.SENDRECV,
         media_stream_constraints={"video": True, "audio": False},
-        video_processor_factory=lambda: GenderDetectionProcessor(model, MODELS_INFO[model_name]),
+        video_processor_factory=GenderDetectionProcessor,
         async_processing=True,
     )
 else:
     st.warning("Please select a model first.")
 
-# ---------------- Notes ----------------
 st.markdown("---")
 st.write("**Notes:**")
 st.write(f"- Models from HF: {HF_REPO_ID}")
