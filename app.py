@@ -8,7 +8,7 @@ from streamlit_webrtc import webrtc_streamer, VideoProcessorBase, WebRtcMode
 import av
 from collections import Counter
 
-# ————————— Streamlit Page Setup —————————
+# ————————— Streamlit Setup —————————
 st.set_page_config(page_title="Drosophila Gender Detection", layout="centered")
 st.title("Drosophila Gender Detection")
 st.write("Select a model (or ensemble) and upload an image or use live camera.")
@@ -19,12 +19,13 @@ HF_REPO_ID = "RishiPTrial/models_h5"
 def check_ultralytics():
     try:
         import ultralytics
-        ver = ultralytics.__version__ if hasattr(ultralytics, "__version__") else "unknown"
+        ver = ultralytics.__version__ if hasattr(ultralytics,"__version__") else "unknown"
         st.info(f"Ultralytics installed, version: {ver}")
         return True
     except Exception as e:
         st.warning(f"Ultralytics import failed: {e}")
         return False
+
 _ULTRA_AVAILABLE = check_ultralytics()
 
 # ————————— List & Catalog Models —————————
@@ -56,6 +57,7 @@ def build_models_info():
 MODELS_INFO = build_models_info()
 if not MODELS_INFO:
     st.error(f"No models found in {HF_REPO_ID}")
+    st.stop()
 
 # ————————— Model Loading Helpers —————————
 def load_model_final_pth(path):
@@ -74,7 +76,7 @@ def load_model_from_hf(name, info):
     try:
         path = hf_hub_download(repo_id=HF_REPO_ID, filename=name)
     except Exception as e:
-        st.error(f"Download error {name}: {e}")
+        st.error(f"Error downloading {name}: {e}")
         return None
 
     fw = info["framework"]
@@ -183,22 +185,31 @@ def detect_yolo(model, pil:Image.Image):
         dets.append({"label":model.names.get(cls,str(cls)),"conf":conf,"box":coords})
     return dets
 
-# ————————— UI: Model / Ensemble Selection —————————
+# ————————— UI: Mode Selection —————————
 st.sidebar.header("Mode Selection")
 mode = st.sidebar.radio("Mode", ["Single Model","Ensemble (Classifiers)"])
-if mode=="Single Model":
-    choice = st.sidebar.selectbox("Select model", list(MODELS_INFO.keys()))
-    MODELS = [(choice, load_model_from_hf(choice, MODELS_INFO[choice]))]
+MODELS = []
+
+if mode == "Single Model":
+    choices = list(MODELS_INFO.keys())
+    choice = st.sidebar.selectbox("Select model", choices)
+    if choice:
+        mdl = load_model_from_hf(choice, MODELS_INFO[choice])
+        if mdl is not None:
+            MODELS.append((choice, mdl))
 else:
     cls_list = [n for n,i in MODELS_INFO.items() if i["type"]=="classification"]
     chosen = st.sidebar.multiselect("Pick classifiers", cls_list, default=cls_list)
-    MODELS = [(n, load_model_from_hf(n, MODELS_INFO[n])) for n in chosen]
+    for name in chosen:
+        mdl = load_model_from_hf(name, MODELS_INFO[name])
+        if mdl is not None:
+            MODELS.append((name, mdl))
 
-# ————————— UI: Image Upload & Prediction —————————
+# ————————— UI: Image Upload —————————
 st.markdown("---")
 st.subheader("📷 Upload Image")
 img_file = st.file_uploader("", type=["jpg","jpeg","png"])
-if img_file:
+if img_file and MODELS:
     pil = Image.open(img_file).convert("RGB")
     st.image(pil, use_column_width=True)
     votes=[]; confs={}
@@ -208,12 +219,12 @@ if img_file:
         info = MODELS_INFO[name]
         if info["type"]=="classification":
             arr = preprocess_pil(pil, info["input_size"])
-            lbl, c = interpret_classification(classify(mdl,arr))
-            votes.append(lbl); confs.setdefault(lbl,[]).append(c)
+            lbl, c = interpret_classification(classify(mdl, arr))
+            votes.append(lbl); confs.setdefault(lbl, []).append(c)
         else:
-            for d in detect_yolo(mdl,pil):
+            for d in detect_yolo(mdl, pil):
                 votes.append(d["label"])
-                confs.setdefault(d["label"],[]).append(d["conf"])
+                confs.setdefault(d["label"], []).append(d["conf"])
                 x1,y1,x2,y2 = d["box"]
                 draw.rectangle([x1,y1,x2,y2],outline="green",width=2)
                 draw.text((x1,y1-12),f'{d["label"]} {d["conf"]:.2f}',fill="green")
@@ -222,12 +233,15 @@ if img_file:
         cnt = Counter(votes).most_common()
         if mode.startswith("Ensemble") and len(cnt)>1 and cnt[0][1]==cnt[1][1]:
             avg = {l:np.mean(confs[l]) for l in confs}
-            final = max(avg,key=avg.get)
+            final = max(avg, key=avg.get)
             final_conf = avg[final]
         else:
             final = cnt[0][0]
-            # if single model, grab that one confidence; if ensemble, use its mean
             final_conf = confs[final][0] if len(MODELS)==1 else np.mean(confs[final])
+
+        # Popup alert
+        js = f"<script>alert('Final: {final} ({final_conf:.1%})');</script>"
+        st.markdown(js, unsafe_allow_html=True)
         st.success(f"Final Prediction: {final} ({final_conf:.1%})")
 
 # ————————— UI: Live Camera —————————
@@ -241,16 +255,16 @@ if MODELS:
                 pil = Image.fromarray(img)
                 draw = ImageDraw.Draw(pil)
                 votes=[]; confs={}
-                for name,mdl in MODELS:
+                for name, mdl in MODELS:
                     info = MODELS_INFO[name]
                     if info["type"]=="classification":
                         arr = preprocess_pil(pil, info["input_size"])
-                        lbl,c = interpret_classification(classify(mdl,arr))
-                        votes.append(lbl); confs.setdefault(lbl,[]).append(c)
+                        lbl, c = interpret_classification(classify(mdl,arr))
+                        votes.append(lbl); confs.setdefault(lbl, []).append(c)
                     else:
                         for d in detect_yolo(mdl,pil):
                             votes.append(d["label"])
-                            confs.setdefault(d["label"],[]).append(d["conf"])
+                            confs.setdefault(d["label"], []).append(d["conf"])
                             x1,y1,x2,y2 = d["box"]
                             draw.rectangle([x1,y1,x2,y2],outline="green",width=2)
                             draw.text((x1,y1-12),f'{d["label"]} {d["conf"]:.2f}',fill="green")
@@ -263,7 +277,10 @@ if MODELS:
                     else:
                         final = cnt[0][0]
                         final_conf = confs[final][0] if len(MODELS)==1 else np.mean(confs[final])
-                    draw.text((10,10), f"{final} ({final_conf:.1%})", fill="red")
+                    draw.text((10,10),f"{final} ({final_conf:.1%})",fill="red")
+                    if not hasattr(self, "_alerted"):
+                        st.markdown(f"<script>alert('Live: {final} ({final_conf:.1%})');</script>", unsafe_allow_html=True)
+                        self._alerted = True
                 return av.VideoFrame.from_ndarray(np.array(pil), format="rgb24")
         return P()
 
@@ -277,6 +294,6 @@ if MODELS:
 else:
     st.warning("No models loaded.")
 
-# ————————— Footer Notes —————————
+# ————————— Footer —————————
 st.markdown("---")
 st.write("**Notes:** Models hosted on Hugging Face:", HF_REPO_ID)
